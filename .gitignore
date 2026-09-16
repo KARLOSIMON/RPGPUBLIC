@@ -1,0 +1,4 @@
+.work/
+*.apk
+*.keystore
+!dev-signing/*.keystore.b64
