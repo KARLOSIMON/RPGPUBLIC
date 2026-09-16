@@ -6,6 +6,7 @@ on:
     branches: ["main"]
     paths:
       - "scripts/prepare_public_client.py"
+      - "scripts/patch_public_android_runtime.py"
       - "dev-signing/**"
       - ".github/workflows/android.yml"
       - "OTSP_ATTRIBUTION.md"
@@ -62,6 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/prepare_public_client.py .work/otclient .work/otsp
+          python3 scripts/patch_public_android_runtime.py .work/otclient
           grep -F '["thomas.proxy.rlwy.net"]' .work/otclient/init.lua
           grep -F 'port = 58136' .work/otclient/init.lua
           grep -F 'protocol = 1041' .work/otclient/init.lua
@@ -71,6 +73,11 @@ jobs:
           grep -F 'RPGPUBLIC_ALWAYS_REFRESH_ASSETS' .work/otclient/src/framework/platform/androidmanager.cpp
           test -s .work/otclient/data/things/1041/Tibia.dat
           test -s .work/otclient/data/things/1041/Tibia.spr
+          grep -F 'RPGPUBLIC_MOBILE_BASELINE_V1' .work/otclient/modules/game_interface/gameinterface.lua
+          grep -F 'RPGPUBLIC_FAT_FINGER_TARGET_V1' .work/otclient/modules/game_interface/widgets/uigamemap.lua
+          grep -F 'RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1' .work/otclient/modules/game_outfit/outfit.lua
+          grep -F 'RPGPUBLIC_HIDE_MOBILE_CHARACTER_APPEARANCE_V1' .work/otclient/modules/client_entergame/characterlist.lua
+          grep -F '(not g_platform.isMobile()) and g_game.isAttacking()' .work/otclient/modules/game_interface/gameinterface.lua
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -252,24 +259,30 @@ jobs:
           unzip -p .work/output/data.zip init.lua | grep -F 'enabled = false'
           unzip -l .work/output/data.zip | grep -F 'data/things/1041/Tibia.dat'
           unzip -l .work/output/data.zip | grep -F 'data/things/1041/Tibia.spr'
+          unzip -p .work/output/data.zip modules/game_interface/gameinterface.lua | grep -F 'RPGPUBLIC_MOBILE_BASELINE_V1'
+          unzip -p .work/output/data.zip modules/game_interface/widgets/uigamemap.lua | grep -F 'RPGPUBLIC_FAT_FINGER_TARGET_V1'
+          unzip -p .work/output/data.zip modules/game_outfit/outfit.lua | grep -F 'RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1'
+          unzip -p .work/output/data.zip modules/client_entergame/characterlist.lua | grep -F 'RPGPUBLIC_HIDE_MOBILE_CHARACTER_APPEARANCE_V1'
 
           sha256sum .work/output/RPGPUBLIC-OpenTibia-1041.apk | tee .work/output/RPGPUBLIC_APK_SHA256.txt
 
           cat > .work/output/PHONE_TEST.txt <<'EOF'
-          RPGPUBLIC stock OpenTibia physical gate
+          RPGPUBLIC public OpenTibia physical gate - combat hardening pass
 
-          This APK intentionally contains no PocketPVP combat, torch, HUD or map patches.
+          This APK contains only generic Android compatibility fixes. No private PocketPVP gameplay/art code.
 
-          1. Install alongside PocketPVP. App name must be RPGPUBLIC.
-          2. Login with the existing test account.
+          1. Install/update RPGPUBLIC. It must remain separate from PocketPVP.
+          2. Login with the existing test account. No oversized outfit/customisation window may block the portrait viewport.
           3. Confirm the real live world renders using OTSP graphics.
           4. Walk normally and verify water/wall collision.
-          5. Tap/select a Goblin and use normal OTClient attack/chase.
-          6. Let the Goblin move. Attack must continue under normal Chase mode.
-          7. Verify equipped weapon damage continues until kill/cancel/native rule.
-          8. Open backpack/container and move an item.
-          9. Toggle/use the server-provided light item and observe whether native lighting changes.
-          10. Report exactly which stock mechanics pass/fail before any PocketPVP client customizations are reintroduced.
+          5. Normal finger tap directly on a Goblin must immediately target it without arming a separate attack shortcut.
+          6. Slightly miss the visible Goblin sprite by about one tile. The nearby hostile-target tolerance should still acquire it rather than walk away.
+          7. Let the Goblin move. ChaseOpponent must remain active; ordinary mobile autowalk must not silently switch to DontChase.
+          8. Confirm repeated native weapon hits continue until kill/cancel/native combat rule.
+          9. Confirm hit/death visual: record exactly whether red spark/blood splash is correct or an armor-like sprite appears.
+          10. Confirm corpse appears and tapping corpse/container opens it; move loot/item between container slots.
+          11. Toggle/use the server-provided light item and report whether native lighting changes.
+          12. Reconnect and repeat attack -> chase -> kill once more to catch state/reconnect regressions.
           EOF
 
       - name: Upload stock physical-test APK
