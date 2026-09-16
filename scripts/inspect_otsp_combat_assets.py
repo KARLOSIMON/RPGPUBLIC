@@ -90,5 +90,24 @@ def main():
     else:
         print("DIAGNOSIS: server 2019 is a splash; investigate fluid subtype/client DAT mapping next.")
 
+    FLAG_PICKUPABLE = 1 << 5
+    FLAG_MOVEABLE = 1 << 6
+    FLAG_STACKABLE = 1 << 7
+    stackables = [
+        r for r in records
+        if (r["flags"] & FLAG_STACKABLE)
+        and (r["flags"] & FLAG_PICKUPABLE)
+        and (r["flags"] & FLAG_MOVEABLE)
+    ]
+    print(f"Pickupable+moveable+stackable candidates ({len(stackables)}):")
+    for r in stackables[:160]:
+        print(f"  server={r['server_id']} client={r['client_id']} group={r['group']} flags={r['flags']}")
+
+    print("Sword-range OTB candidates:")
+    for sid in list(range(1677, 1800)) + list(range(2264, 2273)) + list(range(2586, 2602)):
+        r = by_id.get(sid)
+        if r:
+            print(f"  server={sid} client={r['client_id']} group={r['group']} flags={r['flags']}")
+
 if __name__ == "__main__":
     main()
