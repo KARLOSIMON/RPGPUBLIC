@@ -72,6 +72,8 @@ jobs:
           grep -F 'RPGPUBLIC_HIDE_MOBILE_CHARACTER_APPEARANCE_V1' .work/otclient/modules/client_entergame/characterlist.lua
           grep -F 'RPGPUBLIC_STICKY_MOBILE_BATTLE_TARGET_V1' .work/otclient/modules/game_battle/battle.lua
           grep -F 'RPGPUBLIC_STICKY_MOBILE_CHASE_V1' .work/otclient/modules/game_inventory/inventory.lua
+          grep -F 'RPGPUBLIC_SKIP_FIRST_LOCALE_PROMPT_V1' .work/otclient/modules/client_locales/locales.lua
+          grep -F 'RPGPUBLIC_TEST_LOGIN_PREFILL_V1' .work/otclient/modules/client_entergame/entergame.lua
           grep -F 'RPGPUBLIC already targeting ->' .work/otclient/modules/game_interface/gameinterface.lua
           grep -F '(not g_platform.isMobile()) and g_game.isAttacking()' .work/otclient/modules/game_interface/gameinterface.lua
 
@@ -152,6 +154,8 @@ jobs:
           unzip -p .work/output/final-data.zip modules/game_outfit/outfit.lua | grep -F 'RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1'
           unzip -p .work/output/final-data.zip modules/game_battle/battle.lua | grep -F 'RPGPUBLIC_STICKY_MOBILE_BATTLE_TARGET_V1'
           unzip -p .work/output/final-data.zip modules/game_inventory/inventory.lua | grep -F 'RPGPUBLIC_STICKY_MOBILE_CHASE_V1'
+          unzip -p .work/output/final-data.zip modules/client_locales/locales.lua | grep -F 'RPGPUBLIC_SKIP_FIRST_LOCALE_PROMPT_V1'
+          unzip -p .work/output/final-data.zip modules/client_entergame/entergame.lua | grep -F 'RPGPUBLIC_TEST_LOGIN_PREFILL_V1'
 
       - name: Write physical combat gate
         run: |
