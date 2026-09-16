@@ -24,6 +24,7 @@ BATTLE_MARKER = "-- RPGPUBLIC_STICKY_MOBILE_BATTLE_TARGET_V1"
 INVENTORY_MARKER = "-- RPGPUBLIC_STICKY_MOBILE_CHASE_V1"
 LOCALE_MARKER = "-- RPGPUBLIC_SKIP_FIRST_LOCALE_PROMPT_V1"
 LOGIN_MARKER = "-- RPGPUBLIC_TEST_LOGIN_PREFILL_V1"
+EQUIPMENT_MARKER = "-- RPGPUBLIC_OPEN_EQUIPMENT_ON_LOGIN_V1"
 PUBLIC_TEST_ID = "a"
 
 
@@ -326,11 +327,30 @@ end
         raise SystemExit("inventory walkEvent anchor changed")
     text = text.replace(walk_old, walk_new, 1)
 
+    start_old = """    inventoryShrink = g_settings.getBoolean('mainpanel_shrink_inventory')
+    refreshInventorySizes()
+    refreshInventory_panel()
+"""
+    start_new = """    -- RPGPUBLIC_OPEN_EQUIPMENT_ON_LOGIN_V1
+    -- Keep equipment expanded/visible on every login for physical gear tests.
+    inventoryShrink = false
+    g_settings.set('mainpanel_shrink_inventory', false)
+    inventoryController.ui:show()
+    refreshInventorySizes()
+    refreshInventory_panel()
+"""
+    if start_old not in text:
+        raise SystemExit("inventory onGameStart visibility anchor changed")
+    text = text.replace(start_old, start_new, 1)
+
     path.write_text(text, encoding="utf-8")
     verify = path.read_text(encoding="utf-8")
     assert INVENTORY_MARKER in verify
     assert "Never let ordinary walking or autoChaseOverride drop active chase." in verify
     assert "target:isPlayer()" in verify
+    assert EQUIPMENT_MARKER in verify
+    assert "inventoryShrink = false" in verify
+    assert "inventoryController.ui:show()" in verify
 
 
 def patch_locales(root: Path) -> None:
