@@ -1,0 +1,286 @@
+name: RPGPUBLIC stock Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "scripts/prepare_public_client.py"
+      - "dev-signing/**"
+      - ".github/workflows/android.yml"
+      - "OTSP_ATTRIBUTION.md"
+
+permissions:
+  contents: read
+
+env:
+  OTCLIENT_SHA: d7b821fd99f7fdab0733561de16d0d84936c0db4
+  OTSP_SHA: ae88e1828671b349e729dd21177dde15ea41e123
+  JAVA_VERSION: "17"
+  NDK_VERSION: "29.0.13599879"
+  CMAKE_VERSION: "3.22.1"
+  COMPILE_SDK: "36"
+  BUILD_TOOLS_VERSION: "36.0.0"
+  CI_ANDROID_ABIS: "arm64-v8a"
+  LUAJIT_COMMIT: d0e88930ddde28ff662503f9f20facf34f7265aa
+  VCPKG_ROOT: ${{ github.workspace }}/.work/vcpkg
+  VCPKG_FEATURE_FLAGS: versions,binarycaching
+
+jobs:
+  android:
+    name: Build stock OTSP Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout RPGPUBLIC
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned OTClient Redemption
+        run: |
+          set -euo pipefail
+          mkdir -p .work
+          git clone --filter=blob:none --no-checkout https://github.com/opentibiabr/otclient.git .work/otclient
+          git -C .work/otclient fetch --depth 1 origin "${OTCLIENT_SHA}"
+          git -C .work/otclient checkout --detach "${OTCLIENT_SHA}"
+          test "$(git -C .work/otclient rev-parse HEAD)" = "${OTCLIENT_SHA}"
+
+      - name: Fetch pinned CC BY OTSP graphics
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/peonso/opentibia_sprite_pack.git .work/otsp
+          git -C .work/otsp fetch --depth 1 origin "${OTSP_SHA}"
+          git -C .work/otsp checkout --detach "${OTSP_SHA}"
+          test "$(git -C .work/otsp rev-parse HEAD)" = "${OTSP_SHA}"
+          test -s .work/otsp/client_files/otsp.dat
+          test -s .work/otsp/client_files/otsp.spr
+          cp .work/otsp/AUTHORS.md .work/OTSP_AUTHORS.md
+
+      - name: Prepare stock public client
+        env:
+          RPGPUBLIC_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare_public_client.py .work/otclient .work/otsp
+          grep -F '["thomas.proxy.rlwy.net"]' .work/otclient/init.lua
+          grep -F 'port = 58136' .work/otclient/init.lua
+          grep -F 'protocol = 1041' .work/otclient/init.lua
+          grep -F 'enabled = false' .work/otclient/init.lua
+          grep -F 'applicationId = "com.karlosimon.rpgpublic"' .work/otclient/android/app/build.gradle.kts
+          grep -F 'android:screenOrientation="portrait"' .work/otclient/android/app/src/main/AndroidManifest.xml
+          grep -F 'RPGPUBLIC_ALWAYS_REFRESH_ASSETS' .work/otclient/src/framework/platform/androidmanager.cpp
+          test -s .work/otclient/data/things/1041/Tibia.dat
+          test -s .work/otclient/data/things/1041/Tibia.spr
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: gradle
+          cache-dependency-path: |
+            .work/otclient/android/**/*.gradle
+            .work/otclient/android/**/*.gradle.kts
+            .work/otclient/android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Locate Android SDK
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          test -d "${sdk_root}"
+          sdkmanager_bin=""
+          for candidate in "${sdk_root}"/cmdline-tools/latest/bin/sdkmanager "${sdk_root}"/cmdline-tools/*/bin/sdkmanager; do
+            if [[ -x "${candidate}" ]]; then
+              sdkmanager_bin="${candidate}"
+              break
+            fi
+          done
+          if [[ -z "${sdkmanager_bin}" ]]; then
+            sdkmanager_bin="$(command -v sdkmanager || true)"
+          fi
+          test -n "${sdkmanager_bin}"
+          echo "$(dirname "${sdkmanager_bin}")" >> "${GITHUB_PATH}"
+          echo "SDKMANAGER_BIN=${sdkmanager_bin}" >> "${GITHUB_ENV}"
+          echo "ANDROID_HOME=${sdk_root}" >> "${GITHUB_ENV}"
+          echo "ANDROID_SDK_ROOT=${sdk_root}" >> "${GITHUB_ENV}"
+
+      - name: Install host packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl g++-multilib gcc-multilib git make \
+            ninja-build pkg-config python3 unzip zip
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_SDK_ROOT}"
+          set +o pipefail
+          yes | "${SDKMANAGER_BIN}" --licenses >/dev/null
+          yes | "${SDKMANAGER_BIN}" --install \
+            "platform-tools" \
+            "platforms;android-${COMPILE_SDK}" \
+            "build-tools;${BUILD_TOOLS_VERSION}" \
+            "cmake;${CMAKE_VERSION}" \
+            "ndk;${NDK_VERSION}"
+          set -o pipefail
+
+          ndk_dir="${sdk_root}/ndk/${NDK_VERSION}"
+          if [[ ! -d "${ndk_dir}" ]]; then
+            ndk_dir="$(find "${sdk_root}/ndk" -maxdepth 1 -type d -name "${NDK_VERSION}*" | sort | head -n 1)"
+          fi
+          test -d "${ndk_dir}"
+          echo "ANDROID_NDK_HOME=${ndk_dir}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${ndk_dir}" >> "${GITHUB_ENV}"
+
+      - name: Read pinned vcpkg baseline
+        id: vcpkg
+        run: |
+          set -euo pipefail
+          baseline="$(python3 -c 'import json; print(json.load(open(".work/otclient/vcpkg.json"))["builtin-baseline"])')"
+          [[ "${baseline}" =~ ^[0-9a-f]{40}$ ]]
+          echo "baseline=${baseline}" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache vcpkg checkout
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_ROOT }}
+          key: rpgpublic-vcpkg-${{ runner.os }}-${{ steps.vcpkg.outputs.baseline }}
+
+      - name: Bootstrap pinned vcpkg
+        run: |
+          set -euo pipefail
+          if [[ ! -d "${VCPKG_ROOT}/.git" ]]; then
+            git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
+          fi
+          git -C "${VCPKG_ROOT}" fetch --depth 1 origin "${{ steps.vcpkg.outputs.baseline }}"
+          git -C "${VCPKG_ROOT}" checkout "${{ steps.vcpkg.outputs.baseline }}"
+          "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Enable vcpkg Actions cache
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+            core.exportVariable('VCPKG_BINARY_SOURCES', 'clear;x-gha,readwrite');
+
+      - name: Cache LuaJIT Android library
+        id: luajit-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .work/otclient/luajit-src
+            .work/otclient/android/app/libs
+          key: rpgpublic-luajit-${{ runner.os }}-${{ env.CI_ANDROID_ABIS }}-${{ env.NDK_VERSION }}-${{ env.LUAJIT_COMMIT }}
+
+      - name: Fetch LuaJIT source
+        if: steps.luajit-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone https://github.com/LuaJIT/LuaJIT.git .work/otclient/luajit-src
+          git -C .work/otclient/luajit-src checkout "${LUAJIT_COMMIT}"
+
+      - name: Build LuaJIT for Android
+        if: steps.luajit-cache.outputs.cache-hit != 'true'
+        working-directory: .work/otclient
+        env:
+          OTCLIENT_ANDROID_ABIS: ${{ env.CI_ANDROID_ABIS }}
+        run: |
+          set -euo pipefail
+          chmod +x build_luajit_android.sh
+          ./build_luajit_android.sh
+
+      - name: Pack game assets
+        working-directory: .work/otclient
+        run: |
+          set -euo pipefail
+          mkdir -p android/app/src/main/assets
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          output = Path("android/app/src/main/assets/data.zip")
+          roots = [Path("data"), Path("mods"), Path("modules")]
+          files = [Path("init.lua"), Path("otclientrc.lua"), Path("cacert.pem"), Path("config.ini")]
+
+          with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+              for root in roots:
+                  if not root.exists():
+                      raise SystemExit(f"Missing asset directory: {root}")
+                  for path in sorted(root.rglob("*")):
+                      if path.is_file():
+                          archive.write(path, path.as_posix())
+              for path in files:
+                  if path.exists():
+                      archive.write(path, path.as_posix())
+
+          print(f"Wrote {output} ({output.stat().st_size} bytes)")
+          PY
+
+      - name: Install stable public development signing key
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/.android"
+          base64 -d dev-signing/rpgpublic-debug.keystore.b64 > "${HOME}/.android/debug.keystore"
+          echo "5009ec1283b8a8df0c054512ac8d9f53a236ad9635023e9782a71a85957a7726  ${HOME}/.android/debug.keystore" | sha256sum -c -
+          keytool -list -keystore "${HOME}/.android/debug.keystore" -storepass android -alias androiddebugkey >/dev/null
+
+      - name: Build signed Android release APK
+        working-directory: .work/otclient/android
+        env:
+          OTCLIENT_ANDROID_ABIS: ${{ env.CI_ANDROID_ABIS }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Certify APK payload
+        run: |
+          set -euo pipefail
+          mkdir -p .work/output
+          apk="$(find .work/otclient/android/app/build/outputs/apk/release -type f -name '*.apk' -print -quit)"
+          test -n "${apk}"
+          cp "${apk}" .work/output/RPGPUBLIC-OpenTibia-1041.apk
+
+          unzip -p .work/output/RPGPUBLIC-OpenTibia-1041.apk assets/data.zip > .work/output/data.zip
+          unzip -p .work/output/data.zip init.lua | grep -F '["thomas.proxy.rlwy.net"]'
+          unzip -p .work/output/data.zip init.lua | grep -F 'port = 58136'
+          unzip -p .work/output/data.zip init.lua | grep -F 'protocol = 1041'
+          unzip -p .work/output/data.zip init.lua | grep -F 'enabled = false'
+          unzip -l .work/output/data.zip | grep -F 'data/things/1041/Tibia.dat'
+          unzip -l .work/output/data.zip | grep -F 'data/things/1041/Tibia.spr'
+
+          sha256sum .work/output/RPGPUBLIC-OpenTibia-1041.apk | tee .work/output/RPGPUBLIC_APK_SHA256.txt
+
+          cat > .work/output/PHONE_TEST.txt <<'EOF'
+          RPGPUBLIC stock OpenTibia physical gate
+
+          This APK intentionally contains no PocketPVP combat, torch, HUD or map patches.
+
+          1. Install alongside PocketPVP. App name must be RPGPUBLIC.
+          2. Login with the existing test account.
+          3. Confirm the real live world renders using OTSP graphics.
+          4. Walk normally and verify water/wall collision.
+          5. Tap/select a Goblin and use normal OTClient attack/chase.
+          6. Let the Goblin move. Attack must continue under normal Chase mode.
+          7. Verify equipped weapon damage continues until kill/cancel/native rule.
+          8. Open backpack/container and move an item.
+          9. Toggle/use the server-provided light item and observe whether native lighting changes.
+          10. Report exactly which stock mechanics pass/fail before any PocketPVP client customizations are reintroduced.
+          EOF
+
+      - name: Upload stock physical-test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpgpublic-opentibia-1041-android
+          path: |
+            .work/output/RPGPUBLIC-OpenTibia-1041.apk
+            .work/output/RPGPUBLIC_APK_SHA256.txt
+            .work/output/PHONE_TEST.txt
+            OTSP_ATTRIBUTION.md
+            .work/OTSP_AUTHORS.md
+          if-no-files-found: error
+          retention-days: 3
