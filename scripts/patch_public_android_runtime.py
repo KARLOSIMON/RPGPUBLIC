@@ -20,6 +20,8 @@ from pathlib import Path
 MARKER = "-- RPGPUBLIC_MOBILE_BASELINE_V1"
 OUTFIT_MARKER = "-- RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1"
 CHARLIST_MARKER = "-- RPGPUBLIC_HIDE_MOBILE_CHARACTER_APPEARANCE_V1"
+BATTLE_MARKER = "-- RPGPUBLIC_STICKY_MOBILE_BATTLE_TARGET_V1"
+INVENTORY_MARKER = "-- RPGPUBLIC_STICKY_MOBILE_CHASE_V1"
 
 
 def patch_gameinterface(root: Path) -> None:
@@ -208,6 +210,126 @@ def patch_uigamemap(root: Path) -> None:
     assert "getSpectatorsInRange(autoWalkPos, false, 1, 1)" in verify
 
 
+def patch_battle(root: Path) -> None:
+    path = root / "modules" / "game_battle" / "battle.lua"
+    text = path.read_text(encoding="utf-8")
+    if BATTLE_MARKER in text:
+        return
+
+    old = """    elseif mouseButton == MouseLeftButton and not g_mouse.isPressed(MouseRightButton) then
+        if self.isTarget then
+            g_game.cancelAttack()
+        else
+            g_game.attack(self.creature)
+        end
+        return true
+"""
+    new = """    elseif mouseButton == MouseLeftButton and not g_mouse.isPressed(MouseRightButton) then
+        -- RPGPUBLIC_STICKY_MOBILE_BATTLE_TARGET_V1
+        if g_platform.isMobile() then
+            if self.creature and not self.creature:isNpc() and self.creature:getHealthPercent() > 0 then
+                local current = g_game.getAttackingCreature()
+                g_game.setFightMode(FightOffensive)
+                g_game.setChaseMode(ChaseOpponent)
+                if not current or current:getId() ~= self.creature:getId() then
+                    g_game.attack(self.creature)
+                end
+            end
+        elseif self.isTarget then
+            g_game.cancelAttack()
+        else
+            g_game.attack(self.creature)
+        end
+        return true
+"""
+    if old not in text:
+        raise SystemExit("battle-list target toggle anchor changed")
+    text = text.replace(old, new, 1)
+    path.write_text(text, encoding="utf-8")
+    verify = path.read_text(encoding="utf-8")
+    assert BATTLE_MARKER in verify
+    assert "g_game.setChaseMode(ChaseOpponent)" in verify
+
+
+def patch_inventory(root: Path) -> None:
+    path = root / "modules" / "game_inventory" / "inventory.lua"
+    text = path.read_text(encoding="utf-8")
+    if INVENTORY_MARKER in text:
+        return
+
+    safe_old = """    g_game.setSafeFight(not checked)
+    if not checked then
+        g_game.cancelAttack()
+    end
+"""
+    safe_new = """    g_game.setSafeFight(not checked)
+    if not checked then
+        -- RPGPUBLIC_STICKY_MOBILE_CHASE_V1
+        -- Safe-fight is a PvP control; on mobile it must not cancel a monster.
+        local target = g_game.getAttackingCreature()
+        if not g_platform.isMobile() or not target or target:isPlayer() then
+            g_game.cancelAttack()
+        end
+    end
+"""
+    if safe_old not in text:
+        raise SystemExit("safe-fight attack-cancel anchor changed")
+    text = text.replace(safe_old, safe_new, 1)
+
+    stand_old = """        if not ignoreUpdate then
+            g_game.setChaseMode(DontChase)
+        end
+"""
+    stand_new = """        if not ignoreUpdate then
+            if g_platform.isMobile() and g_game.isAttacking() then
+                -- Active mobile combat is sticky; Stop/Cancel ends it explicitly.
+                ui.standPosture:setEnabled(true)
+                ui.followPosture:setEnabled(false)
+                g_game.setChaseMode(ChaseOpponent)
+                return
+            end
+            g_game.setChaseMode(DontChase)
+        end
+"""
+    if stand_old not in text:
+        raise SystemExit("stand-posture chase anchor changed")
+    text = text.replace(stand_old, stand_new, 1)
+
+    walk_old = """local function walkEvent()
+    if modules.client_options.getOption('autoChaseOverride') then
+        if g_game.isAttacking() and g_game.getChaseMode() == ChaseOpponent then
+            selectPosture('stand', false)
+        end
+    end
+end
+"""
+    walk_new = """local function walkEvent()
+    if g_platform.isMobile() and g_game.isAttacking() then
+        -- Never let ordinary walking or autoChaseOverride drop active chase.
+        if g_game.getChaseMode() ~= ChaseOpponent then
+            g_game.setChaseMode(ChaseOpponent)
+        end
+        return
+    end
+
+    if modules.client_options.getOption('autoChaseOverride') then
+        if g_game.isAttacking() and g_game.getChaseMode() == ChaseOpponent then
+            selectPosture('stand', false)
+        end
+    end
+end
+"""
+    if walk_old not in text:
+        raise SystemExit("inventory walkEvent anchor changed")
+    text = text.replace(walk_old, walk_new, 1)
+
+    path.write_text(text, encoding="utf-8")
+    verify = path.read_text(encoding="utf-8")
+    assert INVENTORY_MARKER in verify
+    assert "Never let ordinary walking or autoChaseOverride drop active chase." in verify
+    assert "target:isPlayer()" in verify
+
+
 def patch_outfit(root: Path) -> None:
     path = root / "modules" / "game_outfit" / "outfit.lua"
     text = path.read_text(encoding="utf-8")
@@ -281,6 +403,8 @@ end
 def patch(root: Path) -> None:
     patch_gameinterface(root)
     patch_uigamemap(root)
+    patch_battle(root)
+    patch_inventory(root)
     patch_outfit(root)
     patch_character_list(root)
     print("RPGPUBLIC Android baseline runtime patch: PASS")
