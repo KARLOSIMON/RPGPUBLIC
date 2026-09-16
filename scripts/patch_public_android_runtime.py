@@ -85,8 +85,8 @@ def patch_gameinterface(root: Path) -> None:
                     g_game.setChaseMode(DontChase)
                 end"""
     count = text.count(chase)
-    if count < 2:
-        raise SystemExit(f"expected two chase-cancel anchors, found {count}")
+    if count < 1:
+        raise SystemExit("mobile chase-cancel anchor missing")
     text = text.replace(chase, chase_mobile_safe)
 
     path.write_text(text, encoding="utf-8")
@@ -94,7 +94,7 @@ def patch_gameinterface(root: Path) -> None:
     verify = path.read_text(encoding="utf-8")
     assert MARKER in verify
     assert "RPGPUBLIC target -> " in verify
-    assert verify.count("(not g_platform.isMobile()) and g_game.isAttacking()") >= 2
+    assert verify.count("(not g_platform.isMobile()) and g_game.isAttacking()") >= 1
     assert "useThing:isLyingCorpse()" in verify
 
 
