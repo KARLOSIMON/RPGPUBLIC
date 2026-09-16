@@ -32,8 +32,9 @@ def prepare(client: Path, otsp: Path) -> None:
     gradle = client / "android" / "app" / "build.gradle.kts"
     manifest = client / "android" / "app" / "src" / "main" / "AndroidManifest.xml"
     strings = client / "android" / "app" / "src" / "main" / "res" / "values" / "strings.xml"
+    android_manager = client / "src" / "framework" / "platform" / "androidmanager.cpp"
 
-    for path in (init, gradle, manifest, strings):
+    for path in (init, gradle, manifest, strings, android_manager):
         if not path.is_file():
             raise SystemExit(f"missing pinned OTClient file: {path}")
 
@@ -118,6 +119,25 @@ def prepare(client: Path, otsp: Path) -> None:
                      "launcher label")
     strings.write_text(s, encoding="utf-8")
 
+    # Public development builds must always use the assets packaged in the APK.
+    # Upstream Android normally skips data.zip once game_data/init.lua exists,
+    # which makes later APKs silently run older Lua/assets. Re-extracting on
+    # launch is acceptable for this proving-ground app and keeps each build
+    # deterministic without touching gameplay mechanics.
+    a = android_manager.read_text(encoding="utf-8")
+    refresh_old = '''    const std::filesystem::path initLua { destFolder + "init.lua" };
+    if (std::filesystem::exists(initLua)) {
+        return;
+    }
+
+'''
+    refresh_new = '''    // RPGPUBLIC_ALWAYS_REFRESH_ASSETS
+    // Development baseline: always refresh packaged Lua/data on launch.
+
+'''
+    a = replace_once(a, refresh_old, refresh_new, "Android packaged-asset refresh")
+    android_manager.write_text(a, encoding="utf-8")
+
     checks = {
         "server": f'["{LOGIN_HOST}"]' in text,
         "protocol": f"protocol = {PROTOCOL}" in text,
@@ -126,6 +146,7 @@ def prepare(client: Path, otsp: Path) -> None:
         "spr": (things / "Tibia.spr").stat().st_size > 0,
         "package": PACKAGE_ID in g,
         "portrait": 'android:screenOrientation="portrait"' in m,
+        "fresh_assets": "RPGPUBLIC_ALWAYS_REFRESH_ASSETS" in a,
     }
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
