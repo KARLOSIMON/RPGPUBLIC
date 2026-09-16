@@ -23,6 +23,8 @@ CHARLIST_MARKER = "-- RPGPUBLIC_HIDE_MOBILE_CHARACTER_APPEARANCE_V1"
 BATTLE_MARKER = "-- RPGPUBLIC_STICKY_MOBILE_BATTLE_TARGET_V1"
 INVENTORY_MARKER = "-- RPGPUBLIC_STICKY_MOBILE_CHASE_V1"
 LOCALE_MARKER = "-- RPGPUBLIC_SKIP_FIRST_LOCALE_PROMPT_V1"
+LOGIN_MARKER = "-- RPGPUBLIC_TEST_LOGIN_PREFILL_V1"
+PUBLIC_TEST_ID = "a"
 
 
 def patch_gameinterface(root: Path) -> None:
@@ -372,6 +374,47 @@ def patch_locales(root: Path) -> None:
     assert LOCALE_MARKER in verify
 
 
+def patch_entergame(root: Path) -> None:
+    path = root / "modules" / "client_entergame" / "entergame.lua"
+    text = path.read_text(encoding="utf-8")
+    if LOGIN_MARKER in text:
+        return
+
+    old = """    if serverData and serverData.account then
+        EnterGame.setAccountName(serverData.account)
+        EnterGame.setPassword(serverData.password)
+        enterGame:getChildById('rememberEmailBox'):setChecked(true)
+    else
+        EnterGame.setAccountName('')
+        EnterGame.setPassword('')
+        enterGame:getChildById('rememberEmailBox'):setChecked(false)
+    end
+"""
+    new = f"""    if serverData and serverData.account then
+        EnterGame.setAccountName(serverData.account)
+        EnterGame.setPassword(serverData.password)
+        enterGame:getChildById('rememberEmailBox'):setChecked(true)
+    else
+        -- RPGPUBLIC_TEST_LOGIN_PREFILL_V1
+        -- Disposable public proving-ground login. Keep the final Login tap manual.
+        local publicTestId = '{PUBLIC_TEST_ID}'
+        EnterGame.setAccountName(g_crypt.encrypt(publicTestId))
+        EnterGame.setPassword(g_crypt.encrypt(publicTestId))
+        enterGame:getChildById('rememberEmailBox'):setChecked(true)
+        enterGame:getChildById('autoLoginBox'):setChecked(false)
+    end
+"""
+    if old not in text:
+        raise SystemExit("enter-game prefill anchor changed")
+    text = text.replace(old, new, 1)
+    path.write_text(text, encoding="utf-8")
+
+    verify = path.read_text(encoding="utf-8")
+    assert LOGIN_MARKER in verify
+    assert "local publicTestId" in verify
+    assert "rememberEmailBox'):setChecked(true)" in verify
+
+
 def patch_outfit(root: Path) -> None:
     path = root / "modules" / "game_outfit" / "outfit.lua"
     text = path.read_text(encoding="utf-8")
@@ -448,6 +491,7 @@ def patch(root: Path) -> None:
     patch_battle(root)
     patch_inventory(root)
     patch_locales(root)
+    patch_entergame(root)
     patch_outfit(root)
     patch_character_list(root)
     print("RPGPUBLIC Android baseline runtime patch: PASS")
