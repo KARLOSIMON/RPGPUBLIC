@@ -51,14 +51,7 @@ def patch_gameinterface(root: Path) -> None:
                 target = creatureThing
             end
 
-            if target and target ~= player and not target:isNpc() and target:getHealthPercent() > 0 then
-                if player then player:stopAutoWalk() end
-                g_game.setFightMode(FightOffensive)
-                g_game.setChaseMode(ChaseOpponent)
-                modules.game_textmessage.displayStatusMessage(
-                    'RPGPUBLIC target -> ' .. target:getName()
-                )
-                g_game.attack(target)
+            if target and rpgPublicEnsureAttack(target) then
                 return true
             end
 
@@ -76,7 +69,66 @@ def patch_gameinterface(root: Path) -> None:
 """
     if mobile_anchor not in text:
         raise SystemExit("gameinterface mobile anchor changed")
+
+    helper_anchor = "function processMouseAction(menuPosition, mouseButton, autoWalkPos, lookThing, useThing, creatureThing, attackCreature)\n"
+    helper = """local function rpgPublicEnsureAttack(creature)
+    if not creature then return false end
+    local player = g_game.getLocalPlayer()
+    if creature == player or creature:isNpc() or creature:getHealthPercent() <= 0 then
+        return false
+    end
+
+    local current = g_game.getAttackingCreature()
+    if current and current:getId() == creature:getId() then
+        modules.game_textmessage.displayStatusMessage(
+            'RPGPUBLIC already targeting -> ' .. creature:getName()
+        )
+        return true
+    end
+
+    if player then player:stopAutoWalk() end
+    g_game.setFightMode(FightOffensive)
+    g_game.setChaseMode(ChaseOpponent)
+    modules.game_textmessage.displayStatusMessage(
+        'RPGPUBLIC target -> ' .. creature:getName()
+    )
+    g_game.attack(creature)
+    return true
+end
+
+"""
+    if helper_anchor not in text:
+        raise SystemExit("processMouseAction anchor changed")
+    text = text.replace(helper_anchor, helper + helper_anchor, 1)
     text = text.replace(mobile_anchor, mobile_replacement, 1)
+
+    shortcut_old = """        elseif shortcut == "attack" then
+            if attackCreature and attackCreature ~= player then
+                modules.game_shortcuts.resetShortcuts()
+                g_game.attack(attackCreature)
+                return true
+            elseif creatureThing and creatureThing ~= player and autoWalkPos and creatureThing:getPosition().z == autoWalkPos.z then
+                modules.game_shortcuts.resetShortcuts()
+                g_game.attack(creatureThing)
+                return true
+            end
+            return true
+"""
+    shortcut_new = """        elseif shortcut == "attack" then
+            if attackCreature and attackCreature ~= player then
+                modules.game_shortcuts.resetShortcuts()
+                rpgPublicEnsureAttack(attackCreature)
+                return true
+            elseif creatureThing and creatureThing ~= player and autoWalkPos and creatureThing:getPosition().z == autoWalkPos.z then
+                modules.game_shortcuts.resetShortcuts()
+                rpgPublicEnsureAttack(creatureThing)
+                return true
+            end
+            return true
+"""
+    if shortcut_old not in text:
+        raise SystemExit("mobile attack-shortcut anchor changed")
+    text = text.replace(shortcut_old, shortcut_new, 1)
 
     chase = """if g_game.isAttacking() and g_game.getChaseMode() == ChaseOpponent then
                     g_game.setChaseMode(DontChase)
@@ -94,6 +146,8 @@ def patch_gameinterface(root: Path) -> None:
     verify = path.read_text(encoding="utf-8")
     assert MARKER in verify
     assert "RPGPUBLIC target -> " in verify
+    assert "RPGPUBLIC already targeting -> " in verify
+    assert verify.count("rpgPublicEnsureAttack(") >= 4
     assert verify.count("(not g_platform.isMobile()) and g_game.isAttacking()") >= 1
     assert "useThing:isLyingCorpse()" in verify
 
