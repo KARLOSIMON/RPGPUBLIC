@@ -22,6 +22,7 @@ OUTFIT_MARKER = "-- RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1"
 CHARLIST_MARKER = "-- RPGPUBLIC_HIDE_MOBILE_CHARACTER_APPEARANCE_V1"
 BATTLE_MARKER = "-- RPGPUBLIC_STICKY_MOBILE_BATTLE_TARGET_V1"
 INVENTORY_MARKER = "-- RPGPUBLIC_STICKY_MOBILE_CHASE_V1"
+LOCALE_MARKER = "-- RPGPUBLIC_SKIP_FIRST_LOCALE_PROMPT_V1"
 
 
 def patch_gameinterface(root: Path) -> None:
@@ -330,6 +331,47 @@ end
     assert "target:isPlayer()" in verify
 
 
+def patch_locales(root: Path) -> None:
+    path = root / "modules" / "client_locales" / "locales.lua"
+    text = path.read_text(encoding="utf-8")
+    if LOCALE_MARKER in text:
+        return
+
+    old = """    local userLocaleName = g_settings.get('locale', 'false')
+    if userLocaleName ~= 'false' and setLocale(userLocaleName) then
+        pdebug('Using configured locale: ' .. userLocaleName)
+    else
+        setLocale(defaultLocaleName)
+        if g_app.hasUpdater() then
+            connect(g_app, {
+                onUpdateFinished = createWindow,
+            })
+        else
+            connect(g_app, {
+                onRun = createWindow,
+            })
+        end
+    end
+"""
+    new = """    local userLocaleName = g_settings.get('locale', 'false')
+    if userLocaleName ~= 'false' and setLocale(userLocaleName) then
+        pdebug('Using configured locale: ' .. userLocaleName)
+    else
+        -- RPGPUBLIC_SKIP_FIRST_LOCALE_PROMPT_V1
+        -- First launch uses the normal English default immediately.
+        setLocale(defaultLocaleName)
+        g_settings.set('locale', defaultLocaleName)
+    end
+"""
+    if old not in text:
+        raise SystemExit("locale first-run anchor changed")
+    text = text.replace(old, new, 1)
+    path.write_text(text, encoding="utf-8")
+
+    verify = path.read_text(encoding="utf-8")
+    assert LOCALE_MARKER in verify
+
+
 def patch_outfit(root: Path) -> None:
     path = root / "modules" / "game_outfit" / "outfit.lua"
     text = path.read_text(encoding="utf-8")
@@ -405,6 +447,7 @@ def patch(root: Path) -> None:
     patch_uigamemap(root)
     patch_battle(root)
     patch_inventory(root)
+    patch_locales(root)
     patch_outfit(root)
     patch_character_list(root)
     print("RPGPUBLIC Android baseline runtime patch: PASS")
