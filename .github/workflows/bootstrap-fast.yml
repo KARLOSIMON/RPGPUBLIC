@@ -34,10 +34,20 @@ jobs:
           test -s .work/base.apk
 
       - name: Install APK repack tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y apktool
+          mkdir -p .work/tools
+          release_json="$(curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/iBotPeaches/Apktool/releases/latest)"
+          apktool_url="$(printf '%s' "${release_json}" | jq -r '.assets[] | select(.name | test("^apktool_[0-9.]+\\.jar$")) | .browser_download_url' | head -n 1)"
+          test -n "${apktool_url}"
+          curl -fsSL "${apktool_url}" -o .work/tools/apktool.jar
+          java -jar .work/tools/apktool.jar --version
+
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
           apksigner="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -1)"
           zipalign="$(find "$sdk_root/build-tools" -type f -name zipalign | sort -V | tail -1)"
@@ -49,7 +59,7 @@ jobs:
       - name: Repackage as separate RPGPUBLIC app
         run: |
           set -euo pipefail
-          apktool d -f .work/base.apk -o .work/decoded >/dev/null
+          java -jar .work/tools/apktool.jar d -f --no-src .work/base.apk -o .work/decoded >/dev/null
 
           python3 - <<'PY'
           from pathlib import Path
@@ -68,7 +78,7 @@ jobs:
               strings.write_text(s, encoding="utf-8")
           PY
 
-          apktool b .work/decoded -o .work/rpgpublic-unsigned.apk >/dev/null
+          java -jar .work/tools/apktool.jar b .work/decoded -o .work/rpgpublic-unsigned.apk >/dev/null
           "$ZIPALIGN" -p -f 4 .work/rpgpublic-unsigned.apk .work/rpgpublic-aligned.apk
 
           mkdir -p "$HOME/.android"
