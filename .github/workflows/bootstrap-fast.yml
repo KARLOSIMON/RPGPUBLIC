@@ -1,31 +1,45 @@
-name: RPGPUBLIC fast bootstrap APK
+name: RPGPUBLIC fast certified-data APK
 
 on:
   workflow_dispatch:
   push:
     branches: ["main"]
     paths:
+      - "scripts/prepare_public_client.py"
+      - "scripts/patch_public_android_runtime.py"
       - ".github/workflows/bootstrap-fast.yml"
 
 permissions:
+  actions: read
   contents: read
 
+env:
+  OTCLIENT_SHA: d7b821fd99f7fdab0733561de16d0d84936c0db4
+  OTSP_SHA: ae88e1828671b349e729dd21177dde15ea41e123
+  BASE_FULL_SOURCE_RUN: "35106165346"
+
 jobs:
-  bootstrap:
+  repack:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Download proven Clean 10.41 bootstrap artifact
-        env:
-          BOOTSTRAP_URL: 'https://sdmntprnortheu.oaiusercontent.com/files/00000000-a0a4-81f4-b803-51b48482d651/raw?se=2026-09-16T14%3A25%3A42Z&sp=r&sv=2026-02-06&sr=b&scid=60255479-d870-54f1-b0f9-004c2a2b8f6d&skoid=e9d2f8b1-028a-4cff-8eb1-d0e66fbefcca&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T12%3A38%3A49Z&ske=2026-09-17T12%3A38%3A49Z&sks=b&skv=2026-02-06&sig=KNBcLNVFRn5lOXt5rHX/1ShMhtwwLZl2MvEo4s8lxDk%3D'
+    steps:
+      - name: Checkout RPGPUBLIC
+        uses: actions/checkout@v4
+
+      - name: Download known-good full-source native shell
+        uses: actions/download-artifact@v4
+        with:
+          name: rpgpublic-opentibia-1041-android
+          path: .work/base-artifact
+          repository: KARLOSIMON/RPGPUBLIC
+          run-id: ${{ env.BASE_FULL_SOURCE_RUN }}
+          github-token: ${{ github.token }}
+
+      - name: Verify base APK
         run: |
           set -euo pipefail
-          mkdir -p .work
-          curl --fail --location --retry 3 "$BOOTSTRAP_URL" -o .work/bootstrap.zip
-          unzip -q .work/bootstrap.zip -d .work/bootstrap
-          base="$(find .work/bootstrap -type f -name '*.apk' -print -quit)"
+          base="$(find .work/base-artifact -type f -name 'RPGPUBLIC-OpenTibia-1041.apk' -print -quit)"
           test -n "$base"
           cp "$base" .work/base.apk
           unzip -p .work/base.apk assets/data.zip > .work/base-data.zip
@@ -33,103 +47,135 @@ jobs:
           unzip -p .work/base-data.zip init.lua | grep -F 'protocol = 1041'
           test -s .work/base.apk
 
-      - name: Install APK repack tools
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - name: Fetch pinned public client sources
         run: |
           set -euo pipefail
-          mkdir -p .work/tools
-          release_json="$(curl -fsSL \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/iBotPeaches/Apktool/releases/latest)"
-          apktool_url="$(printf '%s' "${release_json}" | jq -r '.assets[] | select(.name | test("^apktool_[0-9.]+\\.jar$")) | .browser_download_url' | head -n 1)"
-          test -n "${apktool_url}"
-          curl -fsSL "${apktool_url}" -o .work/tools/apktool.jar
-          java -jar .work/tools/apktool.jar --version
+          git clone --filter=blob:none --no-checkout https://github.com/opentibiabr/otclient.git .work/otclient
+          git -C .work/otclient fetch --depth 1 origin "${OTCLIENT_SHA}"
+          git -C .work/otclient checkout --detach "${OTCLIENT_SHA}"
 
+          git clone --filter=blob:none --no-checkout https://github.com/peonso/opentibia_sprite_pack.git .work/otsp
+          git -C .work/otsp fetch --depth 1 origin "${OTSP_SHA}"
+          git -C .work/otsp checkout --detach "${OTSP_SHA}"
+
+      - name: Prepare and certify combat-first client data
+        env:
+          RPGPUBLIC_VERSION_CODE: "1"
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare_public_client.py .work/otclient .work/otsp
+          python3 scripts/patch_public_android_runtime.py .work/otclient
+
+          grep -F 'RPGPUBLIC_MOBILE_BASELINE_V1' .work/otclient/modules/game_interface/gameinterface.lua
+          grep -F 'RPGPUBLIC_FAT_FINGER_TARGET_V1' .work/otclient/modules/game_interface/widgets/uigamemap.lua
+          grep -F 'RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1' .work/otclient/modules/game_outfit/outfit.lua
+          grep -F 'RPGPUBLIC_HIDE_MOBILE_CHARACTER_APPEARANCE_V1' .work/otclient/modules/client_entergame/characterlist.lua
+          grep -F 'RPGPUBLIC already targeting ->' .work/otclient/modules/game_interface/gameinterface.lua
+          grep -F '(not g_platform.isMobile()) and g_game.isAttacking()' .work/otclient/modules/game_interface/gameinterface.lua
+
+      - name: Pack replacement data payload
+        working-directory: .work/otclient
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          output = Path("../combat-data.zip")
+          roots = [Path("data"), Path("mods"), Path("modules")]
+          files = [Path("init.lua"), Path("otclientrc.lua"), Path("cacert.pem"), Path("config.ini")]
+
+          with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+              for root in roots:
+                  for path in sorted(root.rglob("*")):
+                      if path.is_file():
+                          archive.write(path, path.as_posix())
+              for path in files:
+                  if path.exists():
+                      archive.write(path, path.as_posix())
+          PY
+
+          unzip -p ../combat-data.zip modules/game_interface/gameinterface.lua | grep -F 'RPGPUBLIC_MOBILE_BASELINE_V1'
+          unzip -p ../combat-data.zip modules/game_outfit/outfit.lua | grep -F 'RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1'
+
+      - name: Inject data into known-good native shell
+        run: |
+          set -euo pipefail
+          cp .work/base.apk .work/rpgpublic-combat-unsigned.apk
+          zip -qd .work/rpgpublic-combat-unsigned.apk 'META-INF/*' || true
+          zip -qd .work/rpgpublic-combat-unsigned.apk assets/data.zip || true
+
+          rm -rf .work/inject
+          mkdir -p .work/inject/assets
+          cp .work/combat-data.zip .work/inject/assets/data.zip
+          (
+            cd .work/inject
+            zip -q -0 ../rpgpublic-combat-unsigned.apk assets/data.zip
+          )
+
+          unzip -p .work/rpgpublic-combat-unsigned.apk assets/data.zip > .work/final-data-pre-sign.zip
+          unzip -p .work/final-data-pre-sign.zip modules/game_interface/gameinterface.lua | grep -F 'RPGPUBLIC_MOBILE_BASELINE_V1'
+          unzip -p .work/final-data-pre-sign.zip modules/game_interface/gameinterface.lua | grep -F 'RPGPUBLIC already targeting ->'
+          unzip -p .work/final-data-pre-sign.zip modules/game_interface/widgets/uigamemap.lua | grep -F 'RPGPUBLIC_FAT_FINGER_TARGET_V1'
+          unzip -p .work/final-data-pre-sign.zip modules/game_outfit/outfit.lua | grep -F 'RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1'
+
+      - name: Re-sign with stable public development key
+        run: |
+          set -euo pipefail
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
           apksigner="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -1)"
           zipalign="$(find "$sdk_root/build-tools" -type f -name zipalign | sort -V | tail -1)"
           test -x "$apksigner"
           test -x "$zipalign"
-          echo "APKSIGNER=$apksigner" >> "$GITHUB_ENV"
-          echo "ZIPALIGN=$zipalign" >> "$GITHUB_ENV"
 
-      - name: Repackage as separate RPGPUBLIC app
-        run: |
-          set -euo pipefail
-          java -jar .work/tools/apktool.jar d -f --no-src .work/base.apk -o .work/decoded >/dev/null
-
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path(".work/decoded/AndroidManifest.xml")
-          text=p.read_text(encoding="utf-8")
-          if 'package="com.github.otclient"' in text:
-              text=text.replace('package="com.github.otclient"', 'package="com.karlosimon.rpgpublic"', 1)
-          elif 'package="com.karlosimon.rpgpublic"' not in text:
-              raise SystemExit("Unexpected bootstrap Android package")
-          p.write_text(text, encoding="utf-8")
-
-          strings=Path(".work/decoded/res/values/strings.xml")
-          if strings.exists():
-              s=strings.read_text(encoding="utf-8")
-              s=s.replace(">OpenTibia Clean<", ">RPGPUBLIC<").replace(">otclient<", ">RPGPUBLIC<")
-              strings.write_text(s, encoding="utf-8")
-          PY
-
-          java -jar .work/tools/apktool.jar b .work/decoded -o .work/rpgpublic-unsigned.apk >/dev/null
-          "$ZIPALIGN" -p -f 4 .work/rpgpublic-unsigned.apk .work/rpgpublic-aligned.apk
-
-          mkdir -p "$HOME/.android"
+          mkdir -p "$HOME/.android" .work/output
           base64 -d dev-signing/rpgpublic-debug.keystore.b64 > "$HOME/.android/debug.keystore"
           echo "5009ec1283b8a8df0c054512ac8d9f53a236ad9635023e9782a71a85957a7726  $HOME/.android/debug.keystore" | sha256sum -c -
 
-          "$APKSIGNER" sign \
+          "$zipalign" -p -f 4 .work/rpgpublic-combat-unsigned.apk .work/rpgpublic-combat-aligned.apk
+          "$apksigner" sign \
             --ks "$HOME/.android/debug.keystore" \
             --ks-key-alias androiddebugkey \
             --ks-pass pass:android \
             --key-pass pass:android \
-            --out .work/RPGPUBLIC-OpenTibia-1041.apk \
-            .work/rpgpublic-aligned.apk
-          "$APKSIGNER" verify --verbose .work/RPGPUBLIC-OpenTibia-1041.apk
+            --out .work/output/RPGPUBLIC-OpenTibia-1041-combat-hardening.apk \
+            .work/rpgpublic-combat-aligned.apk
 
-      - name: Certify stock payload
+          "$apksigner" verify --verbose .work/output/RPGPUBLIC-OpenTibia-1041-combat-hardening.apk
+          sha256sum .work/output/RPGPUBLIC-OpenTibia-1041-combat-hardening.apk | tee .work/output/SHA256.txt
+
+          unzip -p .work/output/RPGPUBLIC-OpenTibia-1041-combat-hardening.apk assets/data.zip > .work/output/final-data.zip
+          unzip -p .work/output/final-data.zip modules/game_interface/gameinterface.lua | grep -F 'RPGPUBLIC_MOBILE_BASELINE_V1'
+          unzip -p .work/output/final-data.zip modules/game_interface/gameinterface.lua | grep -F 'RPGPUBLIC already targeting ->'
+          unzip -p .work/output/final-data.zip modules/game_outfit/outfit.lua | grep -F 'RPGPUBLIC_HIDE_MOBILE_OUTFIT_V1'
+
+      - name: Write physical combat gate
         run: |
-          set -euo pipefail
-          unzip -p .work/RPGPUBLIC-OpenTibia-1041.apk assets/data.zip > .work/final-data.zip
-          unzip -p .work/final-data.zip init.lua | grep -F '["thomas.proxy.rlwy.net"]'
-          unzip -p .work/final-data.zip init.lua | grep -F 'port = 58136'
-          unzip -p .work/final-data.zip init.lua | grep -F 'protocol = 1041'
-          unzip -l .work/final-data.zip | grep -F 'data/things/1041/Tibia.dat'
-          unzip -l .work/final-data.zip | grep -F 'data/things/1041/Tibia.spr'
-          ! unzip -l .work/final-data.zip | grep -F 'game_rg045_proof'
-          ! unzip -l .work/final-data.zip | grep -F 'original_terrain_proof_patch.png'
-          sha256sum .work/RPGPUBLIC-OpenTibia-1041.apk | tee .work/RPGPUBLIC_APK_SHA256.txt
+          cat > .work/output/PHONE_TEST.txt <<'EOF'
+          RPGPUBLIC COMBAT-FIRST HARDENING GATE
 
-          cat > .work/PHONE_TEST.txt <<'EOF'
-          RPGPUBLIC STOCK BASELINE
-
-          This is not the customized PocketPVP client.
-
-          1. RPGPUBLIC must install separately from PocketPVP.
-          2. Login to the existing Clean 10.41 live server.
-          3. Confirm movement and collision.
-          4. Use stock target/attack on Goblin. Confirm attack starts.
-          5. Enable stock chase/follow combat and confirm a moving Goblin remains attacked.
-          6. Confirm repeated weapon hits and kill/corpse.
-          7. Open backpack/container and move an item.
-          8. Use/toggle the currently provided Beacon/light and report whether world lighting visibly changes.
-          9. Report any stock-client failure before PocketPVP-specific client patches are reintroduced.
+          1. App opens directly to usable portrait UI; no oversized customization window blocks play.
+          2. Login/reconnect works.
+          3. Movement and wall/water collision remain correct.
+          4. One normal tap on Goblin immediately targets/attacks it.
+          5. A slight one-tile miss around the visible Goblin still acquires it.
+          6. Tapping the already-targeted Goblin again does NOT cancel the attack.
+          7. Moving Goblin remains chased; mobile walking does not silently flip ChaseOpponent to DontChase.
+          8. Real native weapon hits repeat until death/cancel/native combat rule.
+          9. Hit blood must be blood/splash, not an armor/object sprite.
+          10. Goblin death produces its blood corpse; tapping corpse opens its container.
+          11. Backpack/container item movement still works.
+          12. Beacon/light behavior is checked separately after combat.
+          13. Reconnect and repeat tap -> chase -> kill once.
           EOF
 
-      - name: Upload public baseline
+      - name: Upload combat-hardening APK
         uses: actions/upload-artifact@v4
         with:
-          name: rpgpublic-fast-stock-1041
+          name: rpgpublic-combat-hardening-1041
           path: |
-            .work/RPGPUBLIC-OpenTibia-1041.apk
-            .work/RPGPUBLIC_APK_SHA256.txt
-            .work/PHONE_TEST.txt
+            .work/output/RPGPUBLIC-OpenTibia-1041-combat-hardening.apk
+            .work/output/SHA256.txt
+            .work/output/PHONE_TEST.txt
           retention-days: 30
           if-no-files-found: error
